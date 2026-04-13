@@ -2217,6 +2217,15 @@ let _otoCueSampleBuf = null;    // Float32Array
 let _otoCueSampleCount = 0;     // how many samples written so far
 let _otoCueTotalMs = 0;         // expected total duration of this recording
 
+function _getOtoEntriesForCurrentWord() {
+  if (!otoEntries) return null;
+  const w = words[currentIdx]; if (!w) return null;
+  // words[currentIdx] IS the filename when oto mode is active
+  const entries = otoEntries.get(w);
+  if (!entries) return null;
+  return { filename: w, entries };
+}
+
 function _getOtoCueTimes() {
   const info = _getOtoEntriesForCurrentWord(); if (!info) return null;
   return info.entries; // already sorted by offset
