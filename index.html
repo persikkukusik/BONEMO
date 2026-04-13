@@ -1399,9 +1399,17 @@ function renderWordList() {
   if (!words.length) { el.innerHTML = '<div class="no-reclist"><div class="big">&#9900;</div>load a reclist.txt<br>to begin...</div>'; return; }
   el.innerHTML = words.map((w, i) => {
     const active = i === currentIdx, done = !!recordingBlobs[w];
-    const dn = displayName(w);
-    const seq = isSequence(w) ? `<span style="font-size:0.55rem;opacity:0.5;font-family:'Share Tech Mono',monospace;margin-left:4px;border:1px solid var(--muted);padding:1px 4px;border-radius:2px">SEQ</span>` : '';
-    const displayWord = showRomaji ? `${dn} <span style="font-size:0.75em;opacity:0.6">(${toRomaji(dn)})</span>${seq}` : `${dn}${seq}`;
+    let displayWord;
+    if (otoEntries) {
+      const entries = otoEntries.get(w);
+      const aliases = entries ? entries.map(e => e.alias).join(' · ') : w;
+      const shortName = w.replace(/\.wav$/i, '');
+      displayWord = `<span title="${shortName}">${aliases}</span>`;
+    } else {
+      const dn = displayName(w);
+      const seq = isSequence(w) ? `<span style="font-size:0.55rem;opacity:0.5;font-family:'Share Tech Mono',monospace;margin-left:4px;border:1px solid var(--muted);padding:1px 4px;border-radius:2px">SEQ</span>` : '';
+      displayWord = showRomaji ? `${dn} <span style="font-size:0.75em;opacity:0.6">(${toRomaji(dn)})</span>${seq}` : `${dn}${seq}`;
+    }
     const wave = done ? `<canvas class="word-mini-wave" data-word="${encodeURIComponent(w)}" height="16"></canvas>` : '';
     const wrapClass = `word-item-wrap${active?' active':''}${done?' done':''}`;
     return `<div class="${wrapClass}" onclick="selectWord(${i})" onmouseenter="onWordHover(${i})" onmouseleave="onWordHoverEnd(${i})" data-idx="${i}"><div class="word-item"><span>${displayWord}</span><span class="word-status">${done?'REC':''}</span></div>${wave}</div>`;
@@ -1474,28 +1482,48 @@ function renderMain() {
   }
   const w = words[currentIdx], done = !!recordingBlobs[w];
   const pct = (Object.keys(recordingBlobs).length / words.length * 100).toFixed(0);
-  const dn = displayName(w);
-  const seqParts = isSequence(w) ? w.split('_') : null;
-  const syllableCount = seqParts ? seqParts.length : 1;
-  // Scale font size down for longer sequences to prevent overflow
-  let fontSize;
-  if (syllableCount <= 2) fontSize = '5rem';
-  else if (syllableCount <= 3) fontSize = '4rem';
-  else if (syllableCount <= 4) fontSize = '3.2rem';
-  else if (syllableCount <= 6) fontSize = '2.5rem';
-  else if (syllableCount <= 8) fontSize = '2rem';
-  else fontSize = '1.5rem';
 
-  const centerLabel = seqParts
-    ? `<span class="seq-parts">${seqParts.map((p, i) => i < seqParts.length - 1 ? `<span style="white-space:nowrap">${p}</span><span class="seq-divider"></span>` : `<span style="white-space:nowrap">${p}</span>`).join('')}</span>`
-    : w;
-  const displayWord = showRomaji
+  // In oto mode: display the alias sequence as the word label, filename as subtitle
+  let centerLabel, fontSize;
+  if (otoEntries) {
+    const info = _getOtoEntriesForCurrentWord();
+    const aliases = info ? info.entries.map(e => e.alias) : [w];
+    const syllableCount = aliases.length;
+    if (syllableCount <= 3) fontSize = '3.5rem';
+    else if (syllableCount <= 5) fontSize = '2.8rem';
+    else if (syllableCount <= 8) fontSize = '2.2rem';
+    else fontSize = '1.6rem';
+    // Show aliases separated by dividers
+    centerLabel = `<span class="seq-parts">${aliases.map((a, i) =>
+      i < aliases.length - 1
+        ? `<span style="white-space:nowrap">${a}</span><span class="seq-divider"></span>`
+        : `<span style="white-space:nowrap">${a}</span>`
+    ).join('')}</span>
+    <div style="font-size:0.85rem;opacity:0.4;font-family:'Share Tech Mono',monospace;margin-top:6px">${w}</div>`;
+  } else {
+    const dn = displayName(w);
+    const seqParts = isSequence(w) ? w.split('_') : null;
+    const syllableCount = seqParts ? seqParts.length : 1;
+    if (syllableCount <= 2) fontSize = '5rem';
+    else if (syllableCount <= 3) fontSize = '4rem';
+    else if (syllableCount <= 4) fontSize = '3.2rem';
+    else if (syllableCount <= 6) fontSize = '2.5rem';
+    else if (syllableCount <= 8) fontSize = '2rem';
+    else fontSize = '1.5rem';
+    centerLabel = seqParts
+      ? `<span class="seq-parts">${seqParts.map((p, i) => i < seqParts.length - 1 ? `<span style="white-space:nowrap">${p}</span><span class="seq-divider"></span>` : `<span style="white-space:nowrap">${p}</span>`).join('')}</span>`
+      : w;
+  }
+
+  const dn = otoEntries ? w.replace(/\.wav$/i,'') : displayName(w);
+  const displayWord = (!otoEntries && showRomaji)
     ? `${centerLabel}<div style="font-size:1.4rem;opacity:0.5;font-family:'Share Tech Mono',monospace;letter-spacing:0.1em;margin-top:4px">(${toRomaji(dn)})</div>`
     : centerLabel;
 
   document.getElementById('mainContent').innerHTML = `
     <div class="current-word ${done?'done-word':''}" id="currentWordEl" style="flex-direction:column;gap:4px;font-size:${fontSize}">${displayWord}</div>
-    ${otoEntries ? `<div id="otoCueBadge" style="font-family:'Share Tech Mono',monospace;font-size:0.6rem;color:var(--accent3);border:1px solid rgba(255,204,0,0.4);padding:3px 10px;border-radius:2px;background:rgba(255,204,0,0.06);letter-spacing:0.12em">OTO MODE — cue lines active · auto-stop enabled</div>` : ''}
+    ${otoEntries ? `<div id="otoCueBadge" style="font-family:'Share Tech Mono',monospace;font-size:0.6rem;color:var(--accent3);border:1px solid rgba(255,204,0,0.4);padding:3px 10px;border-radius:2px;background:rgba(255,204,0,0.06);letter-spacing:0.12em">OTO MODE — cue lines active · auto-stop enabled</div>
+    <canvas id="otoCueCanvas" style="width:100%;max-width:700px;height:80px;border:1px solid rgba(255,204,0,0.25);border-radius:2px;display:block"></canvas>` : ''}
     <canvas id="waveCanvas"></canvas>
     <div class="pitch-section">
       <div class="pitch-label">PITCH METER</div>
@@ -1541,6 +1569,19 @@ function renderMain() {
 
   updatePitchTargetLine();
   if (done && decodedBuffers[w]) setTimeout(() => drawPlaybackWaveform(decodedBuffers[w]), 50);
+
+  // Draw static oto cue canvas (before recording starts)
+  if (otoEntries) {
+    setTimeout(() => {
+      const cv = document.getElementById('otoCueCanvas');
+      if (cv) {
+        _otoCueTotalMs = _getOtoCueTotalMs();
+        cv.width = cv.offsetWidth || 700;
+        cv.height = 80;
+        _drawOtoCueFrame(cv, false);
+      }
+    }, 30);
+  }
 
   // always-on: restart wave/pitch display after re-render
   if (analyserNode) { cancelAnimationFrame(waveAnimId); cancelAnimationFrame(pitchAnimId); startWaveAndPitch(); }
@@ -1652,8 +1693,7 @@ function _parseOtoIni(text) {
   if (valid.length === 0) return null; // not an oto.ini
 
   const map = new Map(); // filename -> entries
-  const wordOrder = []; // insertion order for unique aliases
-  const seen = new Set();
+  const wordOrder = []; // one entry per unique filename (= one recording session)
   for (const line of valid) {
     const m = line.match(OTO_RE);
     const [, filename, alias, offset, consonant, cutoff, preutterance, overlap] = m;
@@ -1665,10 +1705,10 @@ function _parseOtoIni(text) {
       preutterance: parseFloat(preutterance),
       overlap: parseFloat(overlap),
     };
-    if (!map.has(filename)) map.set(filename, []);
+    if (!map.has(filename)) { map.set(filename, []); wordOrder.push(filename); }
     map.get(filename).push(entry);
-    if (!seen.has(alias)) { seen.add(alias); wordOrder.push(alias); }
   }
+  for (const entries of map.values()) entries.sort((a, b) => a.offset - b.offset);
   return { map, wordOrder };
 }
 
@@ -2071,8 +2111,8 @@ async function startRecording() {
     mediaRecorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
     mediaRecorder.onstop = processRecording;
     mediaRecorder.start();
-    _recStartTime = getAudioCtx().currentTime;
-    if (otoEntries) _scheduleOtoAutoStop();
+    _recStartWallTime = performance.now();
+    if (otoEntries) { _initOtoCueCanvas(); _scheduleOtoAutoStop(); }
     document.getElementById('currentWordEl')?.classList.add('recording');
     const ind = document.getElementById('recIndicator');
     if (ind) { ind.classList.add('active'); ind.style.opacity = ''; }
@@ -2094,6 +2134,7 @@ function stopRecording() {
   if (!isRecording) return;
   isRecording = false;
   if (_otoAutoStopTimer) { clearTimeout(_otoAutoStopTimer); _otoAutoStopTimer = null; }
+  _stopOtoCueCanvas();
 
   if (pendingRecordTimeout !== null) {
     clearTimeout(pendingRecordTimeout);
@@ -2167,129 +2208,198 @@ function processRecording() {
   reader.readAsArrayBuffer(blob);
 }
 
-// ---- OTO CUE STATE ----
-let _recStartTime = null; // AudioContext time when recording started
+// ---- OTO CUE CANVAS ----
+let _recStartWallTime = null;   // performance.now() when recording started
 let _otoAutoStopTimer = null;
+let _otoCueAnimId = null;
+// Ring buffer: we append analyser frames here as recording progresses
+let _otoCueSampleBuf = null;    // Float32Array
+let _otoCueSampleCount = 0;     // how many samples written so far
+let _otoCueTotalMs = 0;         // expected total duration of this recording
 
-function _getOtoEntriesForCurrentWord() {
-  if (!otoEntries) return null;
-  const w = words[currentIdx]; if (!w) return null;
-  // find a filename whose entries include this alias
-  for (const [filename, entries] of otoEntries) {
-    const match = entries.find(e => e.alias === w);
-    if (match) return { filename, entries };
-  }
-  return null;
-}
-
-// Returns sorted list of cut times in ms (offset of each alias in the shared WAV)
 function _getOtoCueTimes() {
   const info = _getOtoEntriesForCurrentWord(); if (!info) return null;
-  // All entries sharing the same filename as the current word
-  const times = info.entries.map(e => ({ alias: e.alias, offset: e.offset, cutoff: e.cutoff }));
-  times.sort((a, b) => a.offset - b.offset);
-  return times;
+  return info.entries; // already sorted by offset
+}
+
+function _getOtoCueTotalMs() {
+  const cues = _getOtoCueTimes(); if (!cues || !cues.length) return 0;
+  const last = cues[cues.length - 1];
+  // cutoff < 0 means "N ms before file end" — estimate total as offset + |cutoff| + small tail
+  // cutoff > 0 means absolute end in ms from start of the alias region, not global — be safe
+  return last.offset + (last.cutoff < 0 ? Math.abs(last.cutoff) : 600) + 150;
 }
 
 function _scheduleOtoAutoStop() {
   if (_otoAutoStopTimer) { clearTimeout(_otoAutoStopTimer); _otoAutoStopTimer = null; }
   if (!otoEntries) return;
-  const cues = _getOtoCueTimes(); if (!cues || !cues.length) return;
-  // The last cue's end = its offset - cutoff (cutoff is negative = from end, positive = abs endpoint)
-  const lastCue = cues[cues.length - 1];
-  let endMs;
-  if (lastCue.cutoff < 0) {
-    // cutoff is negative: means "this many ms from end" — we don't know WAV length so use offset + 600ms padding
-    endMs = lastCue.offset + 600;
-  } else {
-    endMs = lastCue.cutoff;
-  }
-  // endMs is relative to start of WAV. recOffset may shift things, add a small 200ms tail buffer
-  const delay = endMs + 200;
+  const totalMs = _getOtoCueTotalMs(); if (!totalMs) return;
   _otoAutoStopTimer = setTimeout(() => {
     if (isRecording) stopRecording();
-  }, delay);
+  }, totalMs);
 }
 
-// ---- WAVEFORM ----
+function _initOtoCueCanvas() {
+  const canvas = document.getElementById('otoCueCanvas');
+  if (!canvas || !otoEntries) return;
+  const sr = getAudioCtx().sampleRate;
+  _otoCueTotalMs = _getOtoCueTotalMs();
+  const totalSamples = Math.ceil(_otoCueTotalMs / 1000 * sr);
+  _otoCueSampleBuf = new Float32Array(totalSamples);
+  _otoCueSampleCount = 0;
+  _recStartWallTime = performance.now();
+
+  // Size the canvas
+  const W = canvas.offsetWidth || 700;
+  canvas.width = W; canvas.height = 80;
+
+  _drawOtoCueFrame(canvas, false);
+
+  let _lastAnalyserFrame = 0;
+  function frame(ts) {
+    const cv = document.getElementById('otoCueCanvas');
+    if (!cv || !isRecording) { cancelAnimationFrame(_otoCueAnimId); return; }
+    _otoCueAnimId = requestAnimationFrame(frame);
+
+    // Append new analyser samples proportional to elapsed wall time
+    const elapsedMs = performance.now() - _recStartWallTime;
+    const targetSamples = Math.min(Math.ceil(elapsedMs / 1000 * sr), totalSamples);
+    if (analyserNode && targetSamples > _otoCueSampleCount) {
+      const tmp = new Float32Array(analyserNode.fftSize);
+      analyserNode.getFloatTimeDomainData(tmp);
+      // How many new samples to write this frame
+      const toWrite = Math.min(targetSamples - _otoCueSampleCount, tmp.length);
+      // Take the latest `toWrite` samples from tmp (the tail is freshest)
+      const srcStart = Math.max(0, tmp.length - toWrite);
+      _otoCueSampleBuf.set(tmp.subarray(srcStart, srcStart + toWrite), _otoCueSampleCount);
+      _otoCueSampleCount += toWrite;
+    }
+
+    _drawOtoCueFrame(cv, true);
+  }
+  _otoCueAnimId = requestAnimationFrame(frame);
+}
+
+function _drawOtoCueFrame(canvas, live) {
+  const cues = _getOtoCueTimes(); if (!cues) return;
+  const totalMs = _otoCueTotalMs || _getOtoCueTotalMs();
+  const W = canvas.width, H = canvas.height;
+  const ctx = canvas.getContext('2d');
+
+  // Background
+  ctx.fillStyle = '#0d1117';
+  ctx.fillRect(0, 0, W, H);
+
+  // Segment alternating backgrounds
+  for (let i = 0; i < cues.length; i++) {
+    const x1 = Math.round((cues[i].offset / totalMs) * W);
+    const x2 = i < cues.length - 1 ? Math.round((cues[i+1].offset / totalMs) * W) : W;
+    ctx.fillStyle = i % 2 === 0 ? 'rgba(0,255,204,0.04)' : 'rgba(255,204,0,0.04)';
+    ctx.fillRect(x1, 0, x2 - x1, H);
+  }
+
+  // Draw accumulated waveform if live
+  if (live && _otoCueSampleBuf && _otoCueSampleCount > 0) {
+    const totalSamples = _otoCueSampleBuf.length;
+    const drawnW = Math.max(1, Math.round((_otoCueSampleCount / totalSamples) * W));
+    ctx.save();
+    ctx.strokeStyle = '#00ffcc';
+    ctx.shadowColor = '#00ffcc';
+    ctx.shadowBlur = 3;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const step = Math.max(1, Math.ceil(_otoCueSampleCount / drawnW));
+    for (let i = 0; i < drawnW; i++) {
+      let mn = 0, mx = 0;
+      for (let j = 0; j < step; j++) {
+        const d = _otoCueSampleBuf[i * step + j] || 0;
+        if (d < mn) mn = d; if (d > mx) mx = d;
+      }
+      const yLo = ((1 + mn) / 2) * H;
+      const yHi = ((1 + mx) / 2) * H;
+      ctx.moveTo(i + 0.5, yLo); ctx.lineTo(i + 0.5, yHi);
+    }
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.restore();
+
+    // Red cursor
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,68,102,0.9)';
+    ctx.shadowColor = 'rgba(255,68,102,0.7)';
+    ctx.shadowBlur = 8;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(drawnW, 0); ctx.lineTo(drawnW, H);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  }
+
+  // Cut lines (on top of waveform)
+  for (const cue of cues) {
+    const xPos = Math.round((cue.offset / totalMs) * W);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,204,0,0.9)';
+    ctx.shadowColor = 'rgba(255,204,0,0.8)';
+    ctx.shadowBlur = 8;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(xPos, 0); ctx.lineTo(xPos, H);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.restore();
+  }
+
+  // Alias labels centered between consecutive cut lines, bigger font
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  for (let i = 0; i < cues.length; i++) {
+    const x1 = Math.round((cues[i].offset / totalMs) * W);
+    const x2 = i < cues.length - 1 ? Math.round((cues[i+1].offset / totalMs) * W) : W;
+    const midX = (x1 + x2) / 2;
+    const segW = x2 - x1;
+    // pick font size based on segment width
+    const fSize = segW > 60 ? 16 : segW > 30 ? 12 : 10;
+    ctx.font = `bold ${fSize}px "Noto Sans JP", "Share Tech Mono", monospace`;
+    // White shadow for readability over the waveform
+    ctx.shadowColor = 'rgba(0,0,0,0.9)';
+    ctx.shadowBlur = 6;
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.fillText(cues[i].alias, midX, H / 2);
+  }
+  ctx.restore();
+}
+
+function _stopOtoCueCanvas() {
+  cancelAnimationFrame(_otoCueAnimId);
+  _otoCueAnimId = null;
+}
+
+// ---- WAVEFORM (clean oscilloscope — no oto overlays here) ----
 function startWaveAndPitch() { drawWave(); detectPitch(); }
 function drawWave() {
   const canvas = document.getElementById('waveCanvas'); if (!canvas || !analyserNode) return;
   const ctx2d = canvas.getContext('2d');
   canvas.width = canvas.offsetWidth; canvas.height = canvas.offsetHeight;
   const bufLen = analyserNode.frequencyBinCount, dataArr = new Uint8Array(bufLen);
-  // rolling time buffer for oto cue position tracking (circular, ~5s at 60fps)
-  const MAX_HISTORY_MS = 8000;
-  let recElapsedMs = 0;
-  let lastFrameTs = null;
-
-  function draw(ts) {
+  function draw() {
     if (!analyserNode || !document.getElementById('waveCanvas')) { cancelAnimationFrame(waveAnimId); return; }
     waveAnimId = requestAnimationFrame(draw);
-
-    // track elapsed ms while recording
-    if (isRecording && lastFrameTs !== null) recElapsedMs += ts - lastFrameTs;
-    if (!isRecording) recElapsedMs = 0;
-    lastFrameTs = ts;
-
     analyserNode.getByteTimeDomainData(dataArr);
-    const W = canvas.width, H = canvas.height;
-    ctx2d.fillStyle = '#1a1a24'; ctx2d.fillRect(0, 0, W, H);
+    ctx2d.fillStyle = '#1a1a24'; ctx2d.fillRect(0, 0, canvas.width, canvas.height);
     ctx2d.lineWidth = 1.5; ctx2d.strokeStyle = '#00ffcc'; ctx2d.shadowBlur = 6; ctx2d.shadowColor = '#00ffcc';
     ctx2d.beginPath();
-    const sliceW = W / bufLen; let x = 0;
+    const sliceW = canvas.width / bufLen; let x = 0;
     for (let i = 0; i < bufLen; i++) {
-      const y = (dataArr[i] / 128.0 * H) / 2;
+      const y = (dataArr[i] / 128.0 * canvas.height) / 2;
       i === 0 ? ctx2d.moveTo(x, y) : ctx2d.lineTo(x, y); x += sliceW;
     }
     ctx2d.stroke();
     ctx2d.shadowBlur = 0;
-
-    // --- OTO CUE LINES overlay during recording ---
-    if (isRecording && otoEntries) {
-      const cues = _getOtoCueTimes();
-      if (cues && cues.length > 0) {
-        // The canvas represents the current "window" of audio going right
-        // We show a scrolling timeline: right edge = now, left edge = now - MAX_HISTORY_MS
-        const nowMs = recElapsedMs;
-        const windowMs = MAX_HISTORY_MS;
-
-        ctx2d.save();
-        for (const cue of cues) {
-          const cueMs = cue.offset; // when in the recording this sound starts
-          // position from left: (cueMs - (nowMs - windowMs)) / windowMs * W
-          const xPos = ((cueMs - (nowMs - windowMs)) / windowMs) * W;
-          if (xPos < 0 || xPos > W) continue;
-
-          // Draw glowing vertical line
-          ctx2d.strokeStyle = 'rgba(255,204,0,0.9)';
-          ctx2d.shadowColor = 'rgba(255,204,0,0.8)';
-          ctx2d.shadowBlur = 8;
-          ctx2d.lineWidth = 2;
-          ctx2d.beginPath();
-          ctx2d.moveTo(xPos, 0);
-          ctx2d.lineTo(xPos, H);
-          ctx2d.stroke();
-
-          // Label above line
-          ctx2d.shadowBlur = 0;
-          ctx2d.fillStyle = 'rgba(255,204,0,0.9)';
-          ctx2d.font = 'bold 11px "Share Tech Mono", monospace';
-          ctx2d.fillText(cue.alias, Math.min(xPos + 3, W - 40), 13);
-        }
-        // Draw "now" cursor line
-        ctx2d.strokeStyle = 'rgba(255,68,102,0.7)';
-        ctx2d.shadowColor = 'rgba(255,68,102,0.6)';
-        ctx2d.shadowBlur = 6;
-        ctx2d.lineWidth = 1.5;
-        ctx2d.beginPath();
-        ctx2d.moveTo(W, 0); ctx2d.lineTo(W, H);
-        ctx2d.stroke();
-        ctx2d.restore();
-      }
-    }
   }
-  draw(0);
+  draw();
 }
 
 // ---- PITCH ----
