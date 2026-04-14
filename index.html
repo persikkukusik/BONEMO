@@ -1607,6 +1607,7 @@ function updatePitchTargetLine() {
 function selectWord(i) {
   stopPlayback();
   currentIdx = i;
+  _sessionSaveConfig();
   // Auto-apply current silence threshold to this word if it has audio and isn't manually locked
   const w = words[i];
   if (originalBuffers[w] && !manualTrimWords.has(w) && silenceThreshold > 0) {
@@ -1733,6 +1734,7 @@ function confirmReclist() {
   manualTrimWords.clear();
   closeModal('reclistModal');
   renderWordList(); renderMain(); updateStatus();
+  _sessionSaveConfig();
   // init always-on mic as soon as we have a reclist
   initAlwaysOnMic().then(() => { if (analyserNode) startSilenceWatch(); });
 }
@@ -2188,6 +2190,7 @@ function processRecording() {
       decodedBuffers[w] = decodedBuffers[w] || decoded; // fallback if _applyTrim didn't set it
     } catch(e) { recordingBlobs[w] = blob; }
 
+    _sessionSaveBlob(w, recordingBlobs[w]);
     renderWordList(); updateStatus();
 
     if (autoAdvance && currentIdx < words.length - 1) {
@@ -2228,14 +2231,43 @@ function _getOtoEntriesForCurrentWord() {
 
 function _getOtoCueTimes() {
   const info = _getOtoEntriesForCurrentWord(); if (!info) return null;
-  return info.entries; // already sorted by offset
+  const entries = info.entries; // already sorted by offset
+
+  const isKana = s => [...s].some(c => (c >= '\u3040' && c <= '\u309F') || (c >= '\u30A0' && c <= '\u30FF'));
+  const isSpecial = s => s.includes('-'); // e.g. "k -", "- s"
+
+  // Group entries that are within 400ms of each other — they're aliases for the same sound.
+  // Pick the best label per group: kana > short romaji > special/context
+  const zones = [];
+  for (const entry of entries) {
+    const last = zones[zones.length - 1];
+    if (last && (entry.offset - last.offset) < 400) {
+      // Same sound zone — upgrade the label if this one is better
+      const curIsKana  = isKana(last.alias);
+      const newIsKana  = isKana(entry.alias);
+      const curSpecial = isSpecial(last.alias);
+      if (!curIsKana && newIsKana) {
+        // Kana always wins — use its offset too so the line sits at the right spot
+        last.alias  = entry.alias;
+        last.offset = entry.offset;
+      } else if (!curIsKana && !curSpecial && isSpecial(entry.alias)) {
+        // keep current (short romaji is better than "k -")
+      } else if (!curIsKana && !newIsKana && entry.alias.length < last.alias.length) {
+        last.alias  = entry.alias;
+        last.offset = entry.offset;
+      }
+    } else {
+      zones.push({ ...entry });
+    }
+  }
+  return zones;
 }
 
 function _getOtoCueTotalMs() {
-  const cues = _getOtoCueTimes(); if (!cues || !cues.length) return 0;
-  const last = cues[cues.length - 1];
-  // cutoff < 0 means "N ms before file end" — estimate total as offset + |cutoff| + small tail
-  // cutoff > 0 means absolute end in ms from start of the alias region, not global — be safe
+  const info = _getOtoEntriesForCurrentWord(); if (!info) return 0;
+  const entries = info.entries; if (!entries.length) return 0;
+  // Use the raw last entry (highest offset) to calculate recording end time
+  const last = entries[entries.length - 1];
   return last.offset + (last.cutoff < 0 ? Math.abs(last.cutoff) : 600) + 150;
 }
 
@@ -2363,20 +2395,33 @@ function _drawOtoCueFrame(canvas, live) {
   // Alias labels centered between consecutive cut lines, bigger font
   ctx.save();
   ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
   for (let i = 0; i < cues.length; i++) {
     const x1 = Math.round((cues[i].offset / totalMs) * W);
     const x2 = i < cues.length - 1 ? Math.round((cues[i+1].offset / totalMs) * W) : W;
     const midX = (x1 + x2) / 2;
     const segW = x2 - x1;
-    // pick font size based on segment width
     const fSize = segW > 60 ? 16 : segW > 30 ? 12 : 10;
+    const romaji = toRomaji(cues[i].alias);
+    const showRom = showRomaji && romaji !== cues[i].alias;
+    const jaY = showRom ? H * 0.36 : H / 2;
+    const romY = H * 0.68;
+
+    ctx.shadowColor = 'rgba(0,0,0,0.95)';
+    ctx.shadowBlur = 7;
+    ctx.textBaseline = 'middle';
+
+    // Japanese / alias — yellow to match cut lines
     ctx.font = `bold ${fSize}px "Noto Sans JP", "Share Tech Mono", monospace`;
-    // White shadow for readability over the waveform
-    ctx.shadowColor = 'rgba(0,0,0,0.9)';
-    ctx.shadowBlur = 6;
-    ctx.fillStyle = 'rgba(255,255,255,0.9)';
-    ctx.fillText(cues[i].alias, midX, H / 2);
+    ctx.fillStyle = 'rgba(255,220,60,1)';
+    ctx.fillText(cues[i].alias, midX, jaY);
+
+    // Romaji — same yellow, same brightness
+    if (showRom) {
+      const rSize = Math.max(fSize - 2, 9);
+      ctx.font = `bold ${rSize}px "Share Tech Mono", monospace`;
+      ctx.fillStyle = 'rgba(255,220,60,1)';
+      ctx.fillText(romaji, midX, romY);
+    }
   }
   ctx.restore();
 }
@@ -2719,25 +2764,44 @@ async function runExport() {
 
   for (let idx = 0; idx < entries.length; idx++) {
     const [word, blob] = entries[idx];
-    const dn = displayName(word);
-    const fname = '_' + dn;
+
+    let fname;
+    let wordOtoLines = [];
+
+    if (otoEntries && otoEntries.has(word)) {
+      // OTO MODE: use the original filename and all original timing entries verbatim
+      fname = word.replace(/\.wav$/i, '');
+      const wordEntries = otoEntries.get(word);
+      wordOtoLines = wordEntries.map(e =>
+        `${word}=${e.alias},${e.offset},${e.consonant},${e.cutoff},${e.preutterance},${e.overlap}`
+      );
+    } else {
+      // PLAIN RECLIST: auto-analyze timing
+      const dn = displayName(word);
+      fname = '_' + dn;
+      let audioBuf = decodedBuffers[word];
+      if (!audioBuf) {
+        const ab = await blob.arrayBuffer();
+        audioBuf = await ctx.decodeAudioData(ab.slice(0));
+        decodedBuffers[word] = audioBuf;
+      }
+      const oto = analyzeAudioForOto(audioBuf);
+      const alias = dn.replace(/\s+/g, '');
+      wordOtoLines = [`${fname}.wav=${alias},${oto.offset},${oto.consonant},${oto.cutoff},${oto.preutter},${oto.overlap}`];
+    }
 
     // wav
     folder.file(fname + '.wav', await blob.arrayBuffer());
-
-    // oto.ini line — calculate values from actual clip duration
-    const alias = dn.replace(/\s+/g, '');
-    let audioBuf = decodedBuffers[word];
-    if (!audioBuf) {
-      const ab = await blob.arrayBuffer();
-      audioBuf = await ctx.decodeAudioData(ab.slice(0));
-      decodedBuffers[word] = audioBuf;
-    }
-    const oto = analyzeAudioForOto(audioBuf);
-    otoLines.push(`${fname}.wav=${alias},${oto.offset},${oto.consonant},${oto.cutoff},${oto.preutter},${oto.overlap}`);
+    otoLines.push(...wordOtoLines);
 
     // .frq
     try {
+      let audioBuf = decodedBuffers[word];
+      if (!audioBuf) {
+        const ab = await blob.arrayBuffer();
+        audioBuf = await ctx.decodeAudioData(ab.slice(0));
+        decodedBuffers[word] = audioBuf;
+      }
       const frqBinary = generateFrqBinary(audioBuf);
       folder.file(fname + '.wav.frq', frqBinary);
     } catch(e) {
@@ -2779,7 +2843,9 @@ async function runExport() {
 // ---- CLEAR ----
 function clearAll() {
   if (!confirm('clear all recordings? ...you sure?')) return;
-  recordingBlobs = {}; decodedBuffers = {}; originalBuffers = {}; trimRegions = {}; manualTrimWords.clear(); stopPlayback(); renderWordList(); renderMain(); updateStatus();
+  recordingBlobs = {}; decodedBuffers = {}; originalBuffers = {}; trimRegions = {}; manualTrimWords.clear(); stopPlayback();
+  _sessionClearAll();
+  renderWordList(); renderMain(); updateStatus();
 }
 
 function updateStatus() {
@@ -3305,6 +3371,124 @@ function audioBufferToWavBlob(buffer) {
   }
   return new Blob([ab],{type:'audio/wav'});
 }
+
+// ---- SESSION PERSISTENCE (IndexedDB) ----
+const _DB_NAME = 'bonemo_v1', _DB_VER = 1;
+function _dbOpen() {
+  return new Promise((res, rej) => {
+    const req = indexedDB.open(_DB_NAME, _DB_VER);
+    req.onupgradeneeded = e => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('session'))    db.createObjectStore('session');
+      if (!db.objectStoreNames.contains('recordings')) db.createObjectStore('recordings');
+    };
+    req.onsuccess = e => res(e.target.result);
+    req.onerror   = e => rej(e);
+  });
+}
+async function _dbPut(store, key, val) {
+  const db = await _dbOpen();
+  return new Promise((res, rej) => {
+    const tx = db.transaction(store, 'readwrite');
+    tx.objectStore(store).put(val, key);
+    tx.oncomplete = res; tx.onerror = rej;
+  });
+}
+async function _dbGet(store, key) {
+  const db = await _dbOpen();
+  return new Promise((res, rej) => {
+    const tx = db.transaction(store, 'readonly');
+    const req = tx.objectStore(store).get(key);
+    req.onsuccess = e => res(e.target.result); req.onerror = rej;
+  });
+}
+async function _dbGetAllKeys(store) {
+  const db = await _dbOpen();
+  return new Promise((res, rej) => {
+    const tx = db.transaction(store, 'readonly');
+    const req = tx.objectStore(store).getAllKeys();
+    req.onsuccess = e => res(e.target.result); req.onerror = rej;
+  });
+}
+async function _dbClear(store) {
+  const db = await _dbOpen();
+  return new Promise((res, rej) => {
+    const tx = db.transaction(store, 'readwrite');
+    tx.objectStore(store).clear();
+    tx.oncomplete = res; tx.onerror = rej;
+  });
+}
+
+// Save reclist config whenever it changes
+async function _sessionSaveConfig() {
+  const text = document.getElementById('reclistText')?.value || '';
+  try { await _dbPut('session', 'config', { reclistText: text, currentIdx, trimRegions }); } catch(e) {}
+}
+
+// Save a single recording blob
+async function _sessionSaveBlob(word, blob) {
+  try { await _dbPut('recordings', word, blob); } catch(e) {}
+  _sessionSaveConfig();
+}
+
+// Delete a single recording (used by clearAll)
+async function _sessionClearAll() {
+  try { await _dbClear('recordings'); await _dbPut('session', 'config', {}); } catch(e) {}
+}
+
+// Restore entire session on page load
+async function _sessionRestore() {
+  try {
+    const config = await _dbGet('session', 'config');
+    if (!config || !config.reclistText) return;
+
+    // Restore textarea
+    const ta = document.getElementById('reclistText');
+    if (ta) { ta.value = config.reclistText; detectOtoInTextarea(); }
+
+    // Rebuild words / otoEntries
+    words = []; otoEntries = null;
+    const parsed = _parseOtoIni(config.reclistText);
+    if (parsed) { otoEntries = parsed.map; words = parsed.wordOrder; }
+    else {
+      for (const line of config.reclistText.split('\n')) {
+        const tokens = line.trim().split(/\s+/).filter(t => t.length > 0);
+        words.push(...tokens);
+      }
+    }
+    if (!words.length) return;
+    currentIdx = Math.min(config.currentIdx || 0, Math.max(0, words.length - 1));
+    if (config.trimRegions) trimRegions = config.trimRegions;
+
+    // Restore blobs + decode audio
+    // Use a plain OfflineAudioContext so we don't need a user gesture to create AudioContext
+    const wordSet = new Set(words);
+    const keys = await _dbGetAllKeys('recordings');
+    for (const key of keys) {
+      if (!wordSet.has(key)) continue;
+      const blob = await _dbGet('recordings', key);
+      if (!blob) continue;
+      recordingBlobs[key] = blob;
+      try {
+        const ab = await blob.arrayBuffer();
+        // OfflineAudioContext can decode without user gesture
+        const tmpCtx = new OfflineAudioContext(1, 1, 44100);
+        const decoded = await tmpCtx.decodeAudioData(ab.slice(0));
+        originalBuffers[key] = decoded;
+        if (trimRegions[key]) { _applyTrim(key); }
+        else { decodedBuffers[key] = decoded; }
+      } catch(e) { console.warn('restore decode failed', key, e); }
+    }
+
+    // Render UI — mic will init on first record key press as normal
+    renderWordList(); renderMain(); updateStatus();
+  } catch(e) {
+    console.warn('session restore failed:', e);
+  }
+}
+
+// Kick off restore when the page loads
+window.addEventListener('DOMContentLoaded', () => _sessionRestore());
 </script>
 </body>
 </html>
